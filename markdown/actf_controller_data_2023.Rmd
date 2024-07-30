@@ -1,0 +1,1176 @@
+---
+title: "Philadelphia Night Time Data Digest, 2024"
+author: "Michael Fichman"
+date: "July 17, 2024"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    code_download: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(kableExtra)
+library(leaflet)
+library(leaflet.extras)
+library(leaflet.providers)
+library(sf)
+library(ggmap)
+library(DT)
+library(tigris)
+library(mapview)
+library(httr)
+
+plotTheme <- theme(
+  plot.title =element_text(size=12),
+  plot.subtitle = element_text(size=8),
+  plot.caption = element_text(size = 6),
+  axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 10),
+  # Set the entire chart region to blank
+  panel.background=element_blank(),
+  plot.background=element_blank(),
+  #panel.border=element_rect(colour="#F0F0F0"),
+  # Format the grid
+  panel.grid.major=element_line(colour="#D0D0D0",size=.75),
+  axis.ticks=element_blank())
+
+mapTheme <- theme(plot.title =element_text(size=12),
+                  plot.subtitle = element_text(size=8),
+                  plot.caption = element_text(size = 6),
+                  axis.line=element_blank(),
+                  axis.text.x=element_blank(),
+                  axis.text.y=element_blank(),
+                  axis.ticks=element_blank(),
+                  axis.title.x=element_blank(),
+                  axis.title.y=element_blank(),
+                  panel.background=element_blank(),
+                  panel.border=element_blank(),
+                  panel.grid.major=element_line(colour = 'transparent'),
+                  panel.grid.minor=element_blank(),
+                  legend.direction = "vertical", 
+                  legend.position = "right",
+                  plot.margin = margin(1, 1, 1, 1, 'cm'),
+                  legend.key.height = unit(1, "cm"), legend.key.width = unit(0.2, "cm"))
+
+#the magic happens here - ggmap function
+ll <- function(dat, proj4 = 4326){
+  st_transform(dat, proj4)
+}
+
+```
+
+```{r , eval = FALSE, include=FALSE}
+wage_tax_revenue <- read_excel("~/GitHub/ACTF_nightlife/data/wage-tax-revenue.xlsx") %>%
+  rename(Arts_Entertainment_Recreation = 'Arts, Entertainment, and Other Recreation') %>%
+  mutate(year = year(ymd(date)),
+         month = month(ymd(date)))
+
+```
+
+```{r warning=FALSE, warning = FALSE, message = FALSE, echo=FALSE, include=FALSE, results = "hide"}
+# Load data, remove duplicates, adjust for inflation to 2021 dollars
+# New data are here: https://github.com/PhilaController/phl-budget-data/blob/main/src/phl_budget_data/data/processed/collections/wage-collections-by-sector.csv
+wage_tax_revenue_new <- read.csv("https://raw.githubusercontent.com/PhilaController/phl-budget-data/main/src/phl_budget_data/data/processed/collections/wage-collections-by-sector.csv") %>%
+    mutate(year = year(ymd(date)),
+           month = month(ymd(date))) %>%
+  group_by(fiscal_year, fiscal_quarter, sector) %>%
+  slice(1) %>%
+  ungroup() %>%
+  mutate(total = case_when(year == 2014 ~ total * 1.28,
+                           year == 2015 ~ total * 1.28,
+                           year == 2016 ~ total * 1.27,
+                           year == 2017 ~ total * 1.25,
+                           year == 2018 ~ total * 1.21,
+                           year == 2019 ~ total * 1.19,
+                           year == 2020 ~ total * 1.18,
+                           year == 2021 ~ total * 1.12,
+                           year == 2022 ~ total * 1.03,
+                           year == 2023 ~ total * 1,
+                           year == 2024 ~ total * 1))
+
+# County Shapefile
+phila_shp <- counties("PA") %>%
+  filter(NAME == "Philadelphia") %>%
+  st_as_sf(crs = 4326)
+
+# Load districts from OpenDataPhilly
+councilDistricts <- st_read("https://opendata.arcgis.com/datasets/9298c2f3fa3241fbb176ff1e84d33360_0.geojson") %>%
+  st_transform(crs = 4326) 
+
+```
+
+# About
+
+This document contains analysis of recent data regarding wage taxes, licensing, zoning, and mobility related to Philadelphia's nighttime economy. These analyses were originally gathered as part of my internal research by Philadelphia City Council's Arts and Culture Task Force, Nightlife Committee. Currently, they are being used to provide key insights to the Philadelphia Commerce Department's Night Time Economy Director as part of my advisory role to that office. They are presented here for public documentation, reproducibility, and transparency.
+
+Attribution: Analysis by Michael Fichman, Associate Professor of Practice, University of Pennsylvania Weitzman School of Design. 
+
+Wage tax revenue data obtained from Philadelphia Controller's Office, updated to 2023 tax year Q1, 6/18/2024. All other data obtained from Open Data Philly June, 2024.
+
+For code base used to synthesize these data, and for previous versions of these analyses (2021 and 2022), refer to the code download button at the top of this document or visit the github repository for this page - https://github.com/mafichman/ACTF_nightlife . Data about "Save Our Stages" grants, and older tax analysis are available in Markdown documents hosted there.
+
+Questions, contact mfichman@upenn.edu
+
+# Takeaways
+
+- Restaurants have had a strong recovery from COVID. Arts, recreation and hotels are lagging. These insights are based on analysis of wage tax receipts and the opening/closure of restaurant and entertainment licenses.
+
+- The number of both Assembly and Entertainment licenses both continue to decrease.
+
+- Entertainment tax receipts are back at roughly pre-COVID levels. This tells you maybe there is more economic activity going on, but less in the way of jobs/wages in entertainment/hospitality.
+
+- Gun violence is decreasing significantly city-wide. Corridors and areas near nightlife licenses still have fewer incidents than than elsewhere in the city, and "destination corridors" are, on average, much much safer than expected given their traffic level. Neighborhood corridors in areas with epidemic violence continue to have significant issues.
+
+# 1. Hospitality Wage Tax Receipts, 2014-2023 (Q1)
+
+Quarterly wage tax receipts for industries in the arts and hospitality. These data only include the first quarter of 2023.
+
+Data on nighttime-specific industries tend not to be subdivided by day and nighttime activity in wage tax data.
+
+All dollar values adjusted for inflation (2023 dollars) based on BLS guidelines.
+
+Takeaway: It looks like restaurants have done more rebounding than other hospitality sectors (data on new licenses confirms this). Hotels and the arts are still off the pace
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+wage_tax_revenue_new %>%
+  filter(sector %in% c("Restaurants", "Arts, Entertainment, and Other Recreation", "Hotels")) %>%
+  group_by(date, sector) %>%
+  summarize(sum = sum(total),
+            sum = round((sum/1000000), digits = 2)) %>%
+  ggplot()+
+  geom_line(aes(x = as.Date(date), y=sum, color = sector))+
+  ylab("Quarterly Wage Tax Revenue ($ Millions)")+
+  xlab("Date")+
+  labs(
+    title = "Philadelphia Wage Tax Receipts for Three Hospitality Industries",
+    subtitle = "Adjusted for inflation to 2023 Dollars. Source: Philadelphia City Controller's Office, BLS")+
+  plotTheme
+```
+
+## 1.1. Tax revenues by year in millions of dollars
+
+Data for 2023 only represent Q1. All dollar values adjusted for inflation (2023 dollars) based on BLS guidelines.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+wage_tax_revenue_new %>%
+    filter(sector %in% c("Restaurants", "Arts, Entertainment, and Other Recreation", "Hotels")) %>%
+  group_by(year, sector) %>%
+  summarize(sum = sum(total)) %>%
+  mutate(sum = round((sum/1000000), digits = 2)) %>%
+  spread(sector, sum) %>%
+  kable() %>%
+  kable_styling()
+
+```
+
+
+## 1.2. Tax Loss Estimates and Recovery Timeline
+
+Tax revenues by Q1 of FY 2023 were still falling short of expected, meaning that recovery has not been achieved. Expected revenues are based on 2014-2020(TY Q1) trends (based on year, quarter and sector) and adjusted for inflation to 2023 dollars.
+
+```{r model, warning = FALSE, message = FALSE, echo = FALSE, results = "hide"}
+model <- lm(data = wage_tax_revenue_new %>% filter(year < 2020) %>% select(sector, fiscal_quarter, year, total), total ~ as.factor(fiscal_quarter) + year + sector)
+
+summary(model)
+
+
+predict(model, wage_tax_revenue_new) %>% 
+  as.data.frame() %>% 
+  rename(pred = ".") %>% 
+  cbind(., wage_tax_revenue_new) -> wage_tax_revenue_new
+```
+
+Projected wage tax revenues have not yet caught up to the trend-line of activity established in the ~6 years before COVID hit.
+
+```{r projection_chart, warning = FALSE, message = FALSE, echo=FALSE}
+wage_tax_revenue_new %>%
+  group_by(date, sector, year, month) %>% 
+  summarize(Actual = sum(total), 
+            Pre.Pandemic.Trend = sum(pred)) %>% 
+  filter(year >= 2018) %>%
+  ungroup() %>%
+  select(date, sector, Actual, Pre.Pandemic.Trend) %>%
+  gather(-sector, - date, key = "variable", value = "value") %>%
+  mutate(value_m = round(value/1000000, digits = 2)) %>%
+  filter(sector %in% c("Restaurants", "Arts, Entertainment, and Other Recreation", "Hotels")) %>%
+  ggplot()+
+    geom_line(aes(x = as.Date(date), y=value_m, color = variable))+ 
+    geom_line(aes(x = as.Date(date), y=value_m, color = variable), 
+            linetype = "dashed", alpha = 0.5)+
+  facet_wrap(~sector)+
+    ylab("Quarterly Wage Tax Revenue ($ Millions)")+
+    xlab("Date")+
+    labs(
+        title = "Philadelphia Wage Tax Shortfalls",
+        subtitle = "Adjusted for inflation to 2023 Dollars.\n Trend based on TY Q1 2014- Q1 2020 regression controlling for year, quarter, sector. \nSource: Philadelphia City Controller's Office, BLS")+
+    plotTheme
+
+```
+
+Wage tax losses since the beginning of 2020, relative to projections based on 2014-19, are still below expected returns based on pre-COVID trends.
+
+On a percentage basis, this looks like the following. Hotels are still logging much less economic activity.
+
+```{r shortfall_pct, warning = FALSE, message = FALSE, echo=FALSE}
+wage_tax_revenue_new %>%
+    group_by(date, sector, year, month) %>% 
+    summarize(Actual = sum(total), 
+              Pre.Pandemic.Trend = sum(pred), 
+              pct_diff = 100*((Actual-Pre.Pandemic.Trend)/Pre.Pandemic.Trend)) %>%
+    filter(year >= 2020) %>%
+   filter(sector %in% c("Restaurants", "Arts, Entertainment, and Other Recreation", "Hotels")) %>%
+    ggplot()+
+    geom_bar(aes(x = as.Date(date), y=pct_diff), stat = "identity", position = "dodge")+ 
+    facet_wrap(~sector)+
+    ylab("Quarterly Tax Revenue vs. Expected (%)")+
+    xlab("Date")+
+    labs(
+        title = "Philadelphia Wage Tax - Percentage Shortfall vs Pre-Pandemic Trends",
+        subtitle = "Adjusted for inflation to 2023 Dollars.\n Trend based on 2014-COVID regression controlling for year, quarter, sector. \nSource: Philadelphia City Controller's Office, BLS")+
+    plotTheme
+```
+
+```{r industry_comps, warning = FALSE, message = FALSE, echo=FALSE}
+
+# Define linetypes
+sector_linetypes <- c("Hotels" = "solid", "Restaurants" = "dashed", "Retail Trade" = "dotted", 
+                      "Social Services" = "dotdash", "Arts, Entertainment, and Other Recreation" = "longdash", 
+                      "Pharmaceuticals" = "twodash", "Insurance" = "dashed", "Professional Services" = "solid")
+
+sector_colors <- c("Hotels" = "#1f77b4", "Restaurants" = "#ff7f0e", "Retail Trade" = "#2ca02c", 
+                   "Social Services" = "#d62728", "Arts, Entertainment, and Other Recreation" = "#9467bd", 
+                   "Pharmaceuticals" = "#8c564b", "Insurance" = "#e377c2", "Professional Services" = "#7f7f7f")
+
+
+
+wage_tax_revenue_new %>%
+   filter(sector %in% c("Hotels", "Restaurants", "Retail Trade", "Social Services",
+                       "Arts, Entertainment, and Other Recreation", "Pharmaceuticals",
+                       "Insurance", "Professional Services")) %>%
+    group_by(date, sector, year, month) %>% 
+    summarize(Actual = sum(total), 
+              Pre.Pandemic.Trend = sum(pred), 
+              pct_diff = 100*((Actual-Pre.Pandemic.Trend)/Pre.Pandemic.Trend)) %>%
+    filter(year >= 2020) %>%
+    ggplot()+
+    geom_line(aes(x = as.Date(date), y=pct_diff, color = sector, linetype = sector))+ 
+  scale_color_manual(values = sector_colors)+
+  scale_linetype_manual(values = sector_linetypes)+
+    ylab("Quarterly Tax Revenue vs. Expected (%)")+
+    xlab("Date")+
+    labs(
+        title = "Philadelphia Wage Tax - Percentage Shortfall vs Pre-Pandemic Trends",
+        subtitle = "Adjusted for inflation to 2023 Dollars.\n Trend based on 2014-COVID regression controlling for year, quarter, sector. \nSource: Philadelphia City Controller's Office, BLS")+
+    plotTheme
+
+```
+
+Why is this happening? Wage tax returns are down across the board - and these kinds of industries externalize hospitality activity. THe only things that are really "back" are services and retail.
+
+Total tax shortfalls (compared to pre-pandemic trend) since March, 2020, in millions (2023 dollars)
+
+```{r loss_summary, echo=FALSE, message=FALSE, warning=FALSE}
+
+wage_tax_revenue_new %>%
+  group_by(date, sector, year, month) %>% 
+  summarize(Actual = sum(total), 
+            Pre.Pandemic.Trend = sum(pred)) %>% 
+  mutate(loss = Actual - Pre.Pandemic.Trend) %>%
+  ungroup() %>%
+  filter(year == 2020 & month >=3 | year > 2020) %>%
+  group_by(sector) %>%
+  summarize("Est Loss (millions)" = round(sum(loss)/1000000, digits = 2)) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(height = "400px", width = "100%")
+
+```
+
+# 2. Amusement Tax Receipts
+
+Amusement tax revenues seem to be back.
+
+Data from Philadelphia City Controller's Office - 6/18/2024. Data are monthly through July, 2023
+
+Source:
+
+https://raw.githubusercontent.com/PhilaController/phl-budget-data/main/src/phl_budget_data/data/processed/revenue/city-collections.csv
+
+
+```{r load_amusement, message=FALSE, warning=FALSE, echo=FALSE, results = "hide"}
+amusement <- read.csv("https://raw.githubusercontent.com/PhilaController/phl-budget-data/main/src/phl_budget_data/data/processed/collections/city-tax-collections.csv") %>%
+  filter(name == "amusement") %>%
+    mutate(year = year(ymd(date)),
+           month = month(ymd(date))) %>%
+  mutate(total = case_when(year == 2014 ~ total * 1.28,
+                           year == 2015 ~ total * 1.28,
+                           year == 2016 ~ total * 1.27,
+                           year == 2017 ~ total * 1.25,
+                           year == 2018 ~ total * 1.21,
+                           year == 2019 ~ total * 1.19,
+                           year == 2020 ~ total * 1.18,
+                           year == 2021 ~ total * 1.12,
+                           year == 2022 ~ total * 1.03,
+                           year == 2023 ~ total * 1))
+
+```
+
+## 2.1. Timeline of Amusement Tax Revenues
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+amusement %>%
+  group_by(date) %>%
+  summarize(sum = sum(total),
+            sum = round((sum/1000000), digits = 2)) %>%
+  ggplot()+
+  geom_line(aes(x = as.Date(date), y=sum))+
+  ylab("Monthly Amusement Tax Revenue ($ Millions)")+
+  xlab("Date")+
+  labs(
+    title = "Philadelphia Amusement Tax Receipts",
+    subtitle = "Adjusted for inflation to 2023 Dollars. Source: Philadelphia City Controller's Office")+
+  plotTheme
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+amusement %>%
+  group_by(year) %>%
+  summarize(sum = sum(total),
+            sum = round((sum/1000000), digits = 2)) %>%
+  ggplot()+
+  geom_bar(aes(x = year, y=sum), stat = "identity")+
+  ylab("Monthly Amusement Tax Revenue ($ Millions)")+
+  xlab("Date")+
+  labs(
+    title = "Philadelphia Amusement Tax Receipts",
+    subtitle = "2023 Data are through July. Adjusted for inflation to 2023 Dollars. Source: Philadelphia City Controller's Office")+
+  plotTheme
+
+
+```
+
+# 3. Zoning and Assembly Licenses
+
+Last time, we created a really big rundown of SAOLs and where people were applying for them - whether that was triggering zoning changes and complicating the process. (The big takeaway was that opening up CMX-2.5 would double the amount of available parcels, and Councilmembers thought this was kind of tough to sell, but that maybe certain districts it was worth a chat).
+
+This time the analysis is still there, but no major changes. There's still a map of the city-wide zoning according to where SAOLs are permitted. Hopefully that's helpful as a snapshot.
+
+The big takeaway this year is that the number of active SAOLs in Philadelphia is still declining - more are expiring than opening. SAOLs are still being opened largely in places where there is significant zoning review, which brings council, RCOs etc., into play.
+
+```{r dl_zoning, echo=FALSE, message=FALSE, warning=FALSE, echo=FALSE, include=FALSE, results = "hide"}
+
+zones <- st_read("https://opendata.arcgis.com/datasets/0bdb0b5f13774c03abf8dc2f1aa01693_0.geojson") %>%
+  st_as_sf(crs = 4326) %>%
+  mutate(assembly_allowed = ifelse(LONG_CODE %in% 
+                                     c("CMX-4", "CMX-5", "CA-2", "ICMX"),
+                                   "By-Right", 
+                                   ifelse(LONG_CODE %in% 
+                                            c("CMX-2", "CMX-2.5", "CMX-3", "IRMX"),
+                                          "Special Exception", 
+                                          "Not Permitted" )))
+
+licenses <- st_read("https://phl.carto.com/api/v2/sql?q=SELECT+*+FROM+business_licenses&filename=business_licenses&format=geojson&skipfields=cartodb_id") %>%
+  st_as_sf(crs = 4326)
+
+```
+## 3.1. Summary of SAOL-eligible Districts
+
+Assembly is allowed by right in four zoning districts, and by special exception in four others.
+
+Here are some very basic descriptions of these types of zones, with information sourced from Anastasio Law - http://phillyzoning.com/
+
+*By Right*
+
+-CA-2 - Auto-oriented commercial
+
+-CMX-4 - Commercial Mixed Use, mostly found in Center City or along major arterials like Broad, Market or Chestnut Streets
+
+-CMX-5 - Commercial Mixed Use, found in the core of Center City office districts
+
+-ICMX - Commercial/Industrial uses designed as a buffer between commercial and residential uses
+
+*Special Exception*
+
+-CMX-2 - Neighborhood commercial corridor, mixed use - e.g. Baltimore Avenue, Germantown Avenue
+
+-CMX-2.5 - Commercial mixed use designed to promote pedestrian-friendly uses
+
+-CMX-3 - Lower density commercial mixed use than CMX 4&5, found on major corridors like Kensington Ave, South St, Broad south of Washington.
+
+-IRMX - "Low impact" industrial, including artist spaces
+
+```{r explore_zones, message = FALSE, warning = FALSE, echo=FALSE, eval = FALSE}
+zones %>%
+  as.data.frame()%>%
+  filter(LONG_CODE %in% c("CMX-4", "CMX-5", "CA-2", "ICMX", "CMX-2", "CMX-2.5", "CMX-3", "IRMX")) %>%
+  group_by(assembly_allowed, LONG_CODE) %>%
+  tally() %>%
+  rename("Parcels city-wide" = n,
+         District = LONG_CODE) %>%
+  kable %>%
+  kable_styling()
+```
+
+City-wide, roughly 26% of *commercial* districts (by area) are zoned for assembly by right. Much of this area is in large Center City tracts where creative spaces are unlikely to be developed due to cost or constraints of the land.
+
+```{r pct_commercial_props, message = FALSE, warning = FALSE, echo=FALSE}
+zones %>%
+  filter(str_detect(ZONINGGROUP, "Commercial") == TRUE) %>%
+  st_transform(2272) %>%
+  mutate(area = st_area(.)) %>%
+  as.data.frame()%>%
+  group_by(assembly_allowed) %>%
+  summarize(sum_area = sum(area)) %>%
+  #rename(n_parcels = n) %>%
+  mutate(Pct = round(100*(sum_area / sum(sum_area)), 2)) %>%
+  #rename("Parcels City-Wide" = n_parcels) %>%
+  kable() %>%
+  kable_styling()
+```
+
+
+
+## 3.2. City-wide zoning examination
+
+The majority of areas zoned for assembly by-right are in Center City. This is *not* where most development of creative entertainment is taking place.
+
+Take a look at districts outside Center City like Fishtown - by-right SAOL is not really allowed by-right anywhere.
+
+```{r map_exceptions, message = FALSE, warning = FALSE, echo=FALSE, fig.width=8, fig.height= 8}
+mapview(zones %>%
+          filter(assembly_allowed %in% c("Special Exception", "By-Right")) %>%
+          mutate(LONG_CODE = case_when(LONG_CODE == "CA-2" ~ "By-Right CA-2",
+                                       LONG_CODE == "CMX-4" ~ "By-Right CMX-4",
+                                       LONG_CODE == "CMX-5" ~ "By-Right CMX-5",
+                                       LONG_CODE == "ICMX" ~ "By-Right ICMX",
+                                       LONG_CODE == "CMX-2" ~ "Spec Execpt CMX-2",
+                                       LONG_CODE == "CMX-2.5" ~ "Spec Execpt CMX-2.5",
+                                       LONG_CODE == "CMX-3" ~ "Spec Execpt CMX-3",
+                                       LONG_CODE == "IRMX" ~ "Spec Execpt IRMX")),
+        zcol = "LONG_CODE", col.regions=list("#ffffb2", "#fecc5c", "#fd8d3c", "#e31a1c",
+                                             "#edf8fb", "#b3cde3", "#8c96c6", "#88419d"),
+        col = list("transparent"),
+        layer.name = "Zoning Districts")
+
+```
+
+
+## 3.3. SAOL issuance timeline
+
+There are currently 113 SAOLs active in Philly. One major note - it seems to me that the registration of licenses in the OpenDataPhilly system is not entirely current, so these numbers are probably off by a little bit - don't make too much of small changes or differences from year to year.
+
+Very few SAOLs are issued in Philly, and especially few the last few years. The following chart shows the date when SAOL's were issued. 2006 probably has data inflated by the start of the record-keeping period for these data.
+
+```{r license_timeline, echo=FALSE, message=FALSE, warning=FALSE}
+licenses %>%
+  filter(licensetype == "Special Assembly Occupancy") %>%
+  mutate(year_opened = year(as.Date(initialissuedate))) %>%
+  group_by(year_opened) %>%
+  tally() %>%
+  ggplot()+
+  geom_histogram(aes(y = n, x = year_opened), stat = "identity") +
+  labs(title="Special Assembly Occupancy License Active Dates",
+       subtitle= "Data through June, 2024. Source: Philadelphia Dept. Of Licenses & Inspections",
+       x="Year", 
+       y="Number of Licenses Activated")+
+  plotTheme
+
+```
+
+The last few years we are still seeing more inactivations than activations of SAOLs
+
+```{r license_timeline_inactive, echo=FALSE, message=FALSE, warning=FALSE}
+licenses %>%
+  filter(licensetype == "Special Assembly Occupancy",
+         licensestatus != "Active") %>%
+  mutate(year_closed = year(as.Date(expirationdate))) %>%
+  filter(year_closed < 2025) %>%
+  group_by(year_closed) %>%
+  tally() %>%
+  ggplot()+
+  geom_histogram(aes(y = n, x = year_closed), stat = "identity") +
+  labs(title="Special Assembly Occupancy License Expiration Dates",
+       subtitle= "Data through June, 2024. Source: Philadelphia Dept. Of Licenses & Inspections",
+       x="Year", 
+       y="Number of Licenses Inactivated,")+
+  plotTheme
+
+```
+
+```{r license_timeline_inactive3, echo=FALSE, message=FALSE, warning=FALSE}
+licenses %>%
+  filter(licensetype == "Special Assembly Occupancy",
+         licensestatus != "Active") %>%
+  mutate(year = year(as.Date(expirationdate))) %>%
+  as.data.frame() %>%
+  group_by(year) %>%
+  tally() %>%
+  mutate(Action = "Expired") %>%
+  rbind(., 
+  licenses %>%
+  mutate(year = year(as.Date(initialissuedate))) %>%
+    filter(licensetype == "Special Assembly Occupancy") %>%
+    as.data.frame() %>%
+  group_by(year) %>%
+  tally() %>%
+  mutate(Action = "Activated")) %>%
+  filter(year < 2025 & year > 2006) %>%
+  ggplot()+
+  geom_line(aes(y = n, x = year, color = Action), stat = "identity") +
+  labs(title="Special Assembly Occupancy License Issuance and Closure",
+       subtitle= "Data through June, 2024. Source: Philadelphia Dept. Of Licenses & Inspections",
+       x="Year", 
+       y="Number of Licenses")+
+  plotTheme
+```
+
+```{r license_timeline_inactive4, echo=FALSE, message=FALSE, warning=FALSE}
+licenses %>%
+  filter(licensetype == "Special Assembly Occupancy",
+         licensestatus != "Active") %>%
+  mutate(year = year(as.Date(expirationdate))) %>%
+  as.data.frame %>%
+  group_by(year) %>%
+  tally() %>%
+  rename(inactivated = n) %>%
+  full_join(., 
+  licenses %>%
+    filter(licensetype == "Special Assembly Occupancy") %>%
+  mutate(year = year(as.Date(initialissuedate))) %>%
+    as.data.frame() %>%
+  group_by(year) %>%
+  tally() %>%
+  rename(activated = n)) %>%
+  arrange(year) %>%
+  mutate(inactivated = ifelse(is.na(inactivated) == TRUE, 0, inactivated),
+    yearly_net = activated - inactivated,
+         active_licenses = cumsum(yearly_net)) %>%
+  filter(year >2009 & year < 2025) %>%
+  ggplot()+
+  geom_bar(aes(y = active_licenses, x = year), stat = "identity") +
+  labs(title="Active Special Assembly Occupancy Licenses",
+       subtitle= "Activations Minus Expirations By Year from Records 1/2005 - 6/2024. Source: Philadelphia Dept. Of Licenses & Inspections",
+       x="Year", 
+       y="Number of Licenses")+
+  plotTheme
+
+```
+
+## 3.4. SAOLs and By-Right Zoning
+
+Among 113 active Special Assembly Occupancy Licenses, only 27 (24%) were permitted by right in the zones where they were created. This is lower than our last assessment, when it was 28%.
+
+```{r licenses_and_zones1, echo=FALSE, warning = FALSE, message = FALSE}
+licenses %>% 
+  filter(licensetype == "Special Assembly Occupancy",
+         licensestatus == "Active") %>% 
+  st_join(., zones %>%
+            st_make_valid()) %>% 
+  as.data.frame() %>%
+  group_by(assembly_allowed, LONG_CODE) %>% 
+  tally() %>%
+  rename(n_licenses = n) %>%
+  left_join(., zones %>%
+              as.data.frame() %>%
+              group_by(LONG_CODE) %>%
+              tally() %>%
+              rename( total_zone_parcels = n)) %>%
+  group_by(assembly_allowed, LONG_CODE) %>%
+  summarize(n_licenses = sum(n_licenses)) %>%
+  ungroup() %>%
+  mutate(pct = round(100*(n_licenses / sum(n_licenses)),2)) %>%
+  kable()  %>%
+  kable_styling() %>%
+  scroll_box(height = "400px", width = "100%")
+  
+```
+
+
+
+
+```{r licenses_and_zones2, echo=FALSE, warning = FALSE, message = FALSE}
+licenses %>% 
+  filter(licensetype == "Special Assembly Occupancy",
+         licensestatus == "Active") %>% 
+  st_join(., zones %>%
+            st_make_valid()) %>% 
+  as.data.frame() %>%
+  group_by(assembly_allowed, LONG_CODE) %>% 
+  tally() %>%
+  rename(n_licenses = n) %>%
+  left_join(., zones %>%
+              as.data.frame() %>%
+              group_by(LONG_CODE) %>%
+              tally() %>%
+              rename( total_zone_parcels = n)) %>%
+  group_by(assembly_allowed) %>%
+  summarize(n_licenses = sum(n_licenses)) %>%
+  ungroup() %>%
+  mutate(pct = round(100*(n_licenses / sum(n_licenses)),2)) %>%
+  kable() %>%
+  kable_styling()
+  
+```
+
+## 3.5. SAOL map
+
+```{r saol_map, echo=FALSE, message=FALSE, warning=FALSE}
+
+licenses %>% 
+  filter(licensetype == "Special Assembly Occupancy",
+         licensestatus == "Active") %>%
+  select(address, zip, licensenum, opa_account_num, opa_owner, licensetype, licensestatus,
+         business_name, business_mailing_address, legalname, legalentitytype) %>%
+  mapview()
+
+```
+
+# 4. Amusement Licenses
+
+Here is an activation/inactivation timeline for amusement licenses - these data appear to start being reliable in about 2015 - in 2014, hundreds of licenses were added to the register (possibly due to a recording sprint).
+
+```{r amusement_license_timeline_inactive3, echo=FALSE, message=FALSE, warning=FALSE}
+licenses %>%
+  filter(licensetype == "Amusement",
+         licensestatus != "Active") %>%
+  mutate(year = year(as.Date(expirationdate))) %>%
+  as.data.frame %>%
+  group_by(year) %>%
+  tally() %>%
+  rename(inactivated = n) %>%
+  full_join(., 
+  licenses %>%
+    filter(licensetype == "Amusement") %>%
+  mutate(year = year(as.Date(initialissuedate))) %>%
+    as.data.frame() %>%
+  group_by(year) %>%
+  tally() %>%
+  rename(activated = n)) %>%
+  arrange(year) %>%
+  mutate(inactivated = ifelse(is.na(inactivated) == TRUE, 0, inactivated),
+    yearly_net = activated - inactivated,
+         active_licenses = cumsum(yearly_net)) %>%
+  filter(year >2007 ) %>%
+  ggplot()+
+  geom_bar(aes(y = active_licenses, x = year), stat = "identity") +
+  labs(title="Active Amusement Licenses",
+       subtitle= "Activations Minus Expirations By Year from Records 1/2005 - 6/2024. Source: Philadelphia Dept. Of Licenses & Inspections",
+       x="Year", 
+       y="Number of Licenses")+
+  plotTheme
+
+```
+
+## 4.1. Amusement License Map
+
+```{r amusement_map, echo=FALSE, message=FALSE, warning=FALSE}
+
+licenses %>% 
+  filter(licensetype == "Amusement",
+         licensestatus == "Active") %>%
+  select(address, zip, licensenum, opa_account_num, opa_owner, licensetype, licensestatus,
+         business_name, business_mailing_address, legalname, legalentitytype) %>%
+  mapview()
+
+```
+
+# 5. Restaurant Licenses
+
+New Activations are at a relatively good level for restaurants - they surprisingly stayed consistent through COVID and haven't slowed down. Note there is some administration-related bump in 2004/05/06 where records were added to the database with that as the "activation" year
+
+```{r rest_license_timeline, echo=FALSE, message=FALSE, warning=FALSE}
+licenses %>%
+  filter(licensetype == "Food Establishment, Retail Permanent Location") %>%
+  mutate(year_opened = year(as.Date(initialissuedate))) %>%
+  group_by(year_opened) %>%
+  tally() %>%
+  ggplot()+
+  geom_histogram(aes(y = n, x = year_opened), stat = "identity") +
+  labs(title="Food Establishment, Retail Permanent Location License Active Dates",
+       subtitle= "Data through June, 2024. Source: Philadelphia Dept. Of Licenses & Inspections",
+       x="Year", 
+       y="Number of Licenses Activated")+
+  plotTheme
+
+```
+
+Active Licenses (Active minus expiring)
+
+2024 has been a very big year already - almost at 2023 numbers through half a year (is this a record-keeping glitch?)
+
+```{r restaurant_license_timeline_inactive3, echo=FALSE, message=FALSE, warning=FALSE}
+licenses %>%
+  filter(licensetype == "Food Establishment, Retail Permanent Location",
+         licensestatus != "Active") %>%
+  mutate(year = year(as.Date(expirationdate))) %>%
+  as.data.frame %>%
+  group_by(year) %>%
+  tally() %>%
+  rename(inactivated = n) %>%
+  full_join(., 
+  licenses %>%
+    filter(licensetype == "Food Establishment, Retail Permanent Location") %>%
+  mutate(year = year(as.Date(initialissuedate))) %>%
+    as.data.frame() %>%
+  group_by(year) %>%
+  tally() %>%
+  rename(activated = n)) %>%
+  arrange(year) %>%
+  mutate(inactivated = ifelse(is.na(inactivated) == TRUE, 0, inactivated),
+    yearly_net = activated - inactivated,
+         active_licenses = cumsum(yearly_net)) %>%
+  filter(year >2007 ) %>%
+  ggplot()+
+  geom_bar(aes(y = active_licenses, x = year), stat = "identity") +
+  labs(title="Active Permenant Restaurant Licenses",
+       subtitle= "Activations Minus Expirations By Year from Records 1/2005 - 6/2024. Source: Philadelphia Dept. Of Licenses & Inspections",
+       x="Year", 
+       y="Number of Licenses")+
+  plotTheme
+
+```
+
+
+# 6. Firearm Incidents at Night in Philadelphia
+
+There is ongoing concern about gun crime in Philadelphia, but overall numbers of incidents are down from a high in 2021. [According to FBI's uniform crime report](https://crime-data-explorer.app.cloud.gov/pages/explorer/crime/crime-trend), national rates of violent crime are down substantially from peak recorded levels in the 1990s.
+
+This section analyzes [Philadelphia Police Department (PPD) firearm incident reports](https://www.opendataphilly.org/dataset/crime-incidents) from January, 2017 to June, 2024 in relation to the location of Commerce Dept. designated [commercial corridors]https://www.opendataphilly.org/dataset/commercial-corridors, and the location of [food service, sidewalk cafe, special assembly occupancy, and entertainment licenses](https://www.opendataphilly.org/dataset/licenses-and-inspections-business-licenses). We do not have specific information about when specific establishments open or close.
+
+Keep in mind that these are reported incidents - subject to bias in observation, reporting, and classification.
+
+The number of incidents in corridors is trending down along with everything else in the city. The proportion of incidents in corridors is similar to what we saw in 2021-2.
+
+The major takeaways from our analysis are as follows:
+
+1. Firearm incidents are declining for the city as a whole after a peak in 2021. There is a huge drop in late 2023, mostly a decrease in robberies with firearms.
+
+2. Most incidents happen at night, between approximately 11PM and 1AM. The proportion of incidents happening at different hours of the day is pretty steady over time.
+
+3. Gun crime at night mostly happens away from establishments or commercial corridors, and mostly concentrated in neighborhoods with high volumes of incidents.
+
+4. If you are near a licensed establishment at night in a place with relatively low gun crime, you are much, much less likely to be exposed to an incident than if you are elsewhere.
+
+5. Some of the highest traffic local nightlife corridors in CC and nearby have comparatively low frequencies of incidents compared to expected.
+
+6. There are issues with some of the key transit corridors in West, North, lower Northeast - these are great locations for nightlife but there are significant problems with violence.
+
+```{r load_crime_data, echo=FALSE, message=FALSE, warning=FALSE, results = "hide"}
+# https://cityofphiladelphia.github.io/carto-api-explorer/#incidents_part1_part2
+# Jan 1, 2017 to June 1, 2024
+
+# The queries are done by year because it's crushing the API
+
+# URL encode the query
+query <- URLencode("SELECT *, ST_Y(the_geom) AS lat, ST_X(the_geom) AS lng FROM incidents_part1_part2 WHERE dispatch_date_time >= '2017-01-01' AND dispatch_date_time < '2017-12-31'")
+
+# Construct the full URL
+url <- paste0("https://phl.carto.com/api/v2/sql?filename=incidents_part1_part2&format=csv&q=", query)
+
+# Read the data
+philaCrime2017 <- read.csv(url)
+
+# URL encode the query
+query <- URLencode("SELECT *, ST_Y(the_geom) AS lat, ST_X(the_geom) AS lng FROM incidents_part1_part2 WHERE dispatch_date_time >= '2018-01-01' AND dispatch_date_time < '2018-12-31'")
+
+# Construct the full URL
+url <- paste0("https://phl.carto.com/api/v2/sql?filename=incidents_part1_part2&format=csv&q=", query)
+
+# Read the data
+philaCrime2018 <- read.csv(url)
+
+# URL encode the query
+query <- URLencode("SELECT *, ST_Y(the_geom) AS lat, ST_X(the_geom) AS lng FROM incidents_part1_part2 WHERE dispatch_date_time >= '2019-01-01' AND dispatch_date_time < '2019-12-31'")
+
+# Construct the full URL
+url <- paste0("https://phl.carto.com/api/v2/sql?filename=incidents_part1_part2&format=csv&q=", query)
+
+# Read the data
+philaCrime2019 <- read.csv(url)
+
+# URL encode the query
+query <- URLencode("SELECT *, ST_Y(the_geom) AS lat, ST_X(the_geom) AS lng FROM incidents_part1_part2 WHERE dispatch_date_time >= '2020-01-01' AND dispatch_date_time < '2020-12-31'")
+
+# Construct the full URL
+url <- paste0("https://phl.carto.com/api/v2/sql?filename=incidents_part1_part2&format=csv&q=", query)
+
+# Read the data
+philaCrime2020 <- read.csv(url)
+
+# URL encode the query
+query <- URLencode("SELECT *, ST_Y(the_geom) AS lat, ST_X(the_geom) AS lng FROM incidents_part1_part2 WHERE dispatch_date_time >= '2021-01-01' AND dispatch_date_time < '2021-12-31'")
+
+# Construct the full URL
+url <- paste0("https://phl.carto.com/api/v2/sql?filename=incidents_part1_part2&format=csv&q=", query)
+
+# Read the data
+philaCrime2021 <- read.csv(url)
+
+# URL encode the query
+query <- URLencode("SELECT *, ST_Y(the_geom) AS lat, ST_X(the_geom) AS lng FROM incidents_part1_part2 WHERE dispatch_date_time >= '2022-01-01' AND dispatch_date_time < '2022-12-31'")
+
+# Construct the full URL
+url <- paste0("https://phl.carto.com/api/v2/sql?filename=incidents_part1_part2&format=csv&q=", query)
+
+# Read the data
+philaCrime2022 <- read.csv(url)
+
+# URL encode the query
+query <- URLencode("SELECT *, ST_Y(the_geom) AS lat, ST_X(the_geom) AS lng FROM incidents_part1_part2 WHERE dispatch_date_time >= '2023-01-01' AND dispatch_date_time < '2023-12-31'")
+
+# Construct the full URL
+url <- paste0("https://phl.carto.com/api/v2/sql?filename=incidents_part1_part2&format=csv&q=", query)
+
+# Read the data
+philaCrime2023 <- read.csv(url)
+
+# URL encode the query
+query <- URLencode("SELECT *, ST_Y(the_geom) AS lat, ST_X(the_geom) AS lng FROM incidents_part1_part2 WHERE dispatch_date_time >= '2024-01-01' AND dispatch_date_time < '2024-06-30'")
+
+# Construct the full URL
+url <- paste0("https://phl.carto.com/api/v2/sql?filename=incidents_part1_part2&format=csv&q=", query)
+
+# Read the data
+philaCrime2024 <- read.csv(url)
+
+#philaCrime <- read.csv("https://phl.carto.com/api/v2/sql?filename=incidents_part1_part2&format=csv&q=SELECT%20*%20,%20ST_Y(the_geom)%20AS%20lat,%20ST_X(the_geom)%20AS%20lng%20FROM%20incidents_part1_part2%20WHERE%20dispatch_date_time%20%3E=%20%272017-01-01%27%20AND%20dispatch_date_time%20%3C%20%272024-06-01%27")
+
+# Keep only violent crime types, fix typos in homicide data entry,
+# Create time variables
+# Filter out data with bad geometry information
+
+philaCrime <- philaCrime2017 %>%
+  rbind(., philaCrime2018) %>%
+  rbind(., philaCrime2019) %>%
+  rbind(., philaCrime2020) %>%
+  rbind(., philaCrime2021) %>%
+  rbind(., philaCrime2022) %>%
+  rbind(., philaCrime2023) %>%
+  rbind(., philaCrime2024)
+
+violentCrime <- philaCrime %>% 
+  filter(text_general_code %in% c("Other Assaults", 
+                                               "Thefts", 
+                                               "Aggravated Assault Firearm", 
+                                               "Aggravated Assault No Firearm", 
+                                               "Robbery Firearm", 
+                                               "Robbery No Firearm", 
+                                               "Homicide - Criminal", 
+                                               "Homicide - Criminal ", 
+                                               "Rape", 
+                                               "Other Sex Offenses (Not Commercialized")) %>%
+  mutate(text_general_code = ifelse(str_detect(text_general_code, "Homicide") == TRUE,
+         "Homicide - Criminal", text_general_code)) %>%
+  mutate(interval60 = floor_date(ymd(dispatch_date), unit = "hour"),
+         week = week(interval60),
+         month = month(interval60),
+         dotw = wday(interval60, label=TRUE),
+         year = year(interval60),
+         hour = hour(hms(dispatch_time))) %>%
+  mutate(after_six = ifelse(hour > 17 | hour < 7, "6PM - 6AM", "6AM - 6PM"))
+
+# Spatialize data, drop data without spatial info
+
+violentCrime_shp <- violentCrime %>%
+  filter(point_y > 1,
+         point_x > -76,
+         point_x < -73) %>%
+  st_as_sf(coords = c("lng", "lat"), crs = 4326) %>%
+  st_transform(2272)
+
+# Take the licenses for restaurants, amusement, assembly, food establishment
+# Create 200 ft buffers around current licenses
+# Then do a similar thing for older licenses for comparison - maybe 2018 or 19
+
+nightLicenses <- st_read("https://phl.carto.com/api/v2/sql?q=SELECT+*+FROM+business_licenses&filename=business_licenses&format=geojson&skipfields=cartodb_id") %>%
+  filter(licensetype %in% c("Amusement", "Special Assembly Occupancy", "Sidewalk Cafe") |
+           str_detect(licensetype, "Food Estab")) %>%
+  st_transform(crs = 2272)
+
+current_buffer <- nightLicenses %>%
+  filter(licensestatus == "Active") %>%
+  st_union() %>%
+  st_buffer(200) %>%
+  st_as_sf(crs = 2272) %>%
+  mutate(in_buffer = "in buffer")
+
+# Load Corridors
+
+corridors <- st_read("https://opendata.arcgis.com/datasets/f43e5f92d34e41249e7a11f269792d11_0.geojson") %>%
+  st_as_sf() %>%
+  st_transform(crs = 2272)
+
+```
+
+## 6.1. Time patterns of firearm incidents
+
+We examined a category of incidents recorded between January 1, 2017 and June 30, 2024 - incidents classified by the PPD as Criminal Homicide, Robbery with a Firearm, Aggravated Assault with a Firearm.
+
+```{r total_gun_incidents, echo=FALSE, warning = FALSE, message = FALSE}
+violentCrime %>%
+    filter(text_general_code %in% c("Aggravated Assault Firearm", 
+                                    "Robbery Firearm", 
+                                    "Homicide - Criminal", 
+                                    "Homicide - Criminal ")) %>%
+    group_by(text_general_code, year, month) %>%
+    tally() %>%
+    mutate(date = lubridate::my(paste(month, year))) %>%
+    ggplot()+
+    geom_line(aes(x = date, y = n, color = text_general_code))+
+    ylim(0, 500)+
+    labs(title="Monthly Firearm Incidents By Type, Jan, 2017- June, 2024",
+         subtitle= "Source: Philadelphia Police Dept.",
+         x="Year", 
+         y="Monthly Reported Incidents")+
+    plotTheme
+
+```
+
+```{r day_and_time, echo=FALSE, warning = FALSE, message = FALSE }
+
+violentCrime %>%
+  filter(text_general_code %in% c("Aggravated Assault Firearm", 
+                                  "Robbery Firearm", 
+                                  "Homicide - Criminal", 
+                                  "Homicide - Criminal ")) %>%
+  group_by(after_six, year, month) %>%
+  tally() %>%
+  mutate(date = lubridate::my(paste(month, year))) %>%
+  ggplot()+
+  geom_line(aes(x = date, y = n, color = after_six))+
+    ylim(0, 500)+
+  labs(title="Monthly Firearm Incidents By Time of Day, 2017-2024",
+       subtitle= "Homicide, Aggravated Assault, Robbery with Firearms.\n Source: Philadelphia Police Dept.",
+       x="Year", 
+       y="Monthly Reported Incidents")+
+  plotTheme
+```
+
+Most gun crime, overall, happens in the evening, between about 11 PM and 1AM, with much of it concentrated around midnight. 
+
+```{r all_crimes_day, echo=FALSE, warning = FALSE, message = FALSE}
+violentCrime %>%
+  filter(text_general_code %in% c("Aggravated Assault Firearm", 
+                                  "Robbery Firearm", 
+                                  "Homicide - Criminal", 
+                                  "Homicide - Criminal ")) %>%
+  group_by(hour, dotw) %>%
+  tally() %>%
+  ggplot()+
+  geom_line(aes(x= hour, y = n))+
+  facet_wrap(~dotw)+
+  labs(title="Hourly Reported Firearm Incidents, 2017-2024",
+       subtitle= "Homicide and Aggravated Assault, Robbery with Firearms.\n Source: Philadelphia Police Dept.",
+       x="Hour of the Day", 
+       y="Hourly Reported Incidents")+
+  plotTheme
+
+```
+
+The following plots show all firearm incidents since 2020, broken down by day of the week and hour reported. The 12PM (0h) time of day has the highest reporting count by far of any time of day. It is unclear how much of that is related to record-keeping practices, but it doesn't seem like there's a pattern.
+
+
+## 6.2. Spatial Pattern of Nighttime Incidents
+
+We related these firearm incidents (and other violent crime incidents) to two types of data, wanting to know how frequently incidents were happening near hospitality locations at night.
+
+1. Philadelphia Licenses and Inspections records of Amusement, Special Assembly Occupancy Licenses, Sidewalk Cafe licenses, and any type of Food Establishment License. and 
+
+2. Commercial corridor boundaries kept by the Department of Commerce.
+
+Keep in mind - we do not know particularly when these establishments are open and closed. We don't know if an incident at 11PM outside a restaurant happens while that restaurant is in active operation. We filtered out incidents that took place near license locations when those licenses were not active (e.g. before they were created).
+
+-----
+
+We examined a wide variety of violent crimes in commercial corridors and within 200 feet of restaurants, assembly and amusement businesses. This timeline shows that at any time of day, any day of the week, there are far more incidents of aggravated assault, robbery, theft, rape, sexual crimes, and homicide away from areas of hospitality activity.
+
+It is substantially more likely one will be exposed to a violent crime at almost any hour of the day away from a licensed establishment at any time of day, as compared to a weekend night near a licensed establishment.
+
+```{r all_crimes_200_ft, echo=FALSE, warning = FALSE, message = FALSE}
+st_join(violentCrime_shp %>% 
+          filter(year > 2020) %>%
+          filter(text_general_code %in% c("Aggravated Assault Firearm", 
+                                          "Aggravated Assault No Firearm", 
+                                          "Robbery Firearm", 
+                                          "Robbery No Firearm", 
+                                          "Homicide - Criminal", 
+                                          "Homicide - Criminal ", 
+                                          "Rape", 
+                                          "Other Sex Offenses (Not Commercialized)")), current_buffer) %>%
+  mutate(Proximate_To_License = ifelse(is.na(in_buffer) == TRUE, "Over 200 ft Away", "Within 200 ft")) %>%
+  group_by(Proximate_To_License, dotw, hour) %>%
+  tally() %>%
+    ggplot()+
+    geom_bar(aes(x = hour, y = n, fill = Proximate_To_License), 
+             stat = "identity", position = "dodge")+
+  facet_wrap(~dotw)+
+  labs(title="Hourly Reported Violent Crimes, 2021-2024 by \nProximity to Hopsitality Licenses",
+       subtitle= "Homicide, Aggravated Assault, Rape, Sex Offenses, Robbery - with and without Firearms. \nSource: Philadelphia Dept. Of Commerce, Dept. Licenses and Inspections, Philadelphia Police Dept.",
+       x="Hour of the Day", 
+       y="Number of Reported Incidents")+
+  plotTheme
+
+```
+
+On average, commercial corridors have about as many incidents city-wide at 4PM as they do at 10 or PM. For the most part, violence on corridors does not spike on weekends, surprisingly.
+
+Incidents in commercial areas, near establishments make up 10-15% of incidents city-wide at night - a steady rate for over 5 years. (As of 6/10, 1950 total incidents 6PM-6AM, 222 w/in 200 ft of a business in a corridor). We don't have info about specific open/close hours to know exactly what businesses might have been open during what incidents.
+
+Incidents in corridors track the city's overall trends pretty closely.
+
+```{r corridor_timeseries, echo=FALSE, warning = FALSE, message = FALSE  }
+st_join(violentCrime_shp %>% 
+          filter(text_general_code %in% c("Aggravated Assault Firearm", 
+                                          "Robbery Firearm", 
+                                          "Homicide - Criminal", 
+                                          "Homicide - Criminal " )), 
+        corridors) %>%
+  mutate(in_Corridor = ifelse(is.na(NAME) == TRUE, 
+                                       "Outside Corridor", "Inside Corridor")) %>%
+  group_by(in_Corridor, after_six, year, month) %>%
+  tally() %>%
+  mutate(date = lubridate::my(paste(month, year))) %>%
+  filter(after_six == "6PM - 6AM") %>%
+  ggplot()+
+  geom_line(aes(x = date, y = n, color = in_Corridor))+
+      ylim(0, 400)+
+  labs(title="Monthly Nighttime Firearm Incidents Inside and Outside Commercial Corridors, 2017-2024",
+       subtitle= "Homicide and Aggravated Assault, Robbery with Firearms. 6PM-6AM.\n Source: Philadelphia Dept. Of Licenses & Inspections, Philadelphia Police Dept.",
+       x="Year", 
+       y="Number of Reported Incidents")+
+  plotTheme
+
+```
+
+Incidents within 200 feet of a licensed establishment also track general trends - notice how few incidents take place near establishments.
+
+```{r within_200, echo=FALSE, warning = FALSE, message = FALSE }
+
+st_join(violentCrime_shp %>% 
+          filter(text_general_code %in% c("Aggravated Assault Firearm", 
+                                          "Robbery Firearm", 
+                                          "Homicide - Criminal", 
+                                          "Homicide - Criminal " )), 
+        current_buffer) %>%
+  as.data.frame() %>%
+  mutate(Proximate_To_License = ifelse(is.na(in_buffer) == TRUE, "Over 200 ft Away", "Within 200 ft")) %>%
+  group_by(Proximate_To_License, after_six, year, month) %>%
+  tally() %>%
+  mutate(date = lubridate::my(paste(month, year))) %>%
+  filter(after_six == "6PM - 6AM") %>%
+  ggplot()+
+  geom_line(aes(x = date, y = n, color = Proximate_To_License))+
+  labs(title="Monthly Nighttime Firearm Incidents By Proximity to\nAssembly, Restaurant or Amusement License, 2018-2024",
+       subtitle= "Homicide, Aggravated Assault, Robbery with  Firearms.6PM-6AM.\n Source: Philadelphia Dept. Of Licenses & Inspections, Philadelphia Police Dept.",
+       x="Year", 
+       y="Number of Reported Incidents")+
+  plotTheme
+
+```
+
+## 6.3. Interactive Map of Incidents in Commercial Corridors
+
+This interactive map shows the total number of firearm incidents 6PM-6AM since 2017 reported in the City's commercial corridors. Hover over each specific area to see a breakdown of incidents by year. The color reflects the number of incidents for the full calendar year 2023.
+
+```{r incident_mapview, echo=FALSE, warning = FALSE, message = FALSE}
+st_join(violentCrime_shp %>% 
+          filter(text_general_code %in% c("Aggravated Assault Firearm", 
+                                          "Robbery Firearm", 
+                                          "Homicide - Criminal", 
+                                          "Homicide - Criminal " )), 
+        corridors) %>%
+  filter(is.na(NAME) == FALSE) %>%
+  # filter(str_detect(NAME, "South")) %>%
+  filter(after_six == "6PM - 6AM") %>%
+  group_by(NAME, year) %>%
+  tally() %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  pivot_wider(names_from = year, values_from = n) %>%
+  mutate(`2017` = ifelse(is.na(`2017`) == TRUE, 0, `2017`),
+         `2018` = ifelse(is.na(`2018`) == TRUE, 0, `2018`),
+         `2019` = ifelse(is.na(`2019`) == TRUE, 0, `2019`),
+         `2020` = ifelse(is.na(`2020`) == TRUE, 0, `2020`),
+         `2021` = ifelse(is.na(`2021`) == TRUE, 0, `2021`),
+         `2022` = ifelse(is.na(`2022`) == TRUE, 0, `2022`),
+         `2023` = ifelse(is.na(`2023`) == TRUE, 0, `2023`),
+         `2024` = ifelse(is.na(`2024`) == TRUE, 0, `2024`))%>%
+  left_join(., corridors %>%
+              select(NAME), by = c("NAME")) %>%
+ mutate(Incidents_Since_2017 = `2017`+ `2018` + `2019` + `2020` + `2021` + `2022` + `2023` + `2024`) %>%
+  relocate(`2020`, .after = `2019`) %>%
+  relocate(`2018`, .after = `2017`) %>%
+  relocate(`2021`, .after = `2020`) %>%
+  st_as_sf() %>%
+  st_transform(2272) %>%
+  mapView(zcol = "2023")
+
+```
+
+Some commentary regarding this map:
+
+As we saw in 2021/22, the corridors in the city with the most firearm incidents (aggravated assault, robbery, homicide) are the ones in areas with epidemic gun violence (e.g. Kensington and Allegheny, Broad and Susquehanna, 52nd St.). This intensity is especially pronounced when you consider their size. There is also a relatively high number of incidents along the main transit corridors - the EL and the Broad St. line in West, North and lower Northeast Philly.
+
+Some of the most popular "destination" corridors - those that have regional visitorship (Center City, Stadiums, South St, Delaware Waterfront) have very low numbers of incidents given their volume of traffic. (The stadiums have one incident since 2017!) The numbers in Fishtown, Delaware Ave, South Street - they are very low. One incident is too many, but it's certainly notable that this is NOT the primary area where gun violence is taking place.
+
+A notable exception to this are the East Market and West Market areas - these areas cover basically all of the Center City business district, and they have among the most incidents of any corridor (aapx 20 in 2023) .... BUT .... a) they have, by a 2019 estimate - 25x (yes you read that right) the visitation of the average Philadelphia corridor and b) they cover extremely large areas.
+
+Incidents in the first half of 2024 are down a lot - West Market has fallen out of the top group of corridors by incident count, and overall incidents are 
+
+Students of mine analyzed 2019 phone GPS data from third parties to these corridors at night - you can look at how many people go to each corridor and from where using this app: https://sabrinasmlee.github.io/exploratory_page/home.html
+
+### 6.3.1. 2023 Full Year Incidents
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE}
+st_join(violentCrime_shp %>% 
+          filter(text_general_code %in% c("Aggravated Assault Firearm", 
+                                          "Robbery Firearm", 
+                                          "Homicide - Criminal", 
+                                          "Homicide - Criminal " )), 
+        corridors) %>%
+  filter(is.na(NAME) == FALSE) %>%
+  # filter(str_detect(NAME, "South")) %>%
+  filter(after_six == "6PM - 6AM") %>%
+  group_by(NAME, year) %>%
+  tally() %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(year == 2023) %>%
+  arrange(-n) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(height = "400px", width = "100%")
+
+```
+
+### 6.3.2. 2024 Incidents (Jan-June 1)
+
+```{r, echo=FALSE, warning = FALSE, message = FALSE}
+st_join(violentCrime_shp %>% 
+          filter(text_general_code %in% c("Aggravated Assault Firearm", 
+                                          "Robbery Firearm", 
+                                          "Homicide - Criminal", 
+                                          "Homicide - Criminal " )), 
+        corridors) %>%
+  filter(is.na(NAME) == FALSE) %>%
+  # filter(str_detect(NAME, "South")) %>%
+  filter(after_six == "6PM - 6AM") %>%
+  group_by(NAME, year) %>%
+  tally() %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(year == 2024) %>%
+  arrange(-n) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(height = "400px", width = "100%")
+
+```
